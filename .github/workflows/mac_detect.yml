@@ -1,0 +1,29 @@
+name: Catch The Real Apple Mac
+
+on:
+  workflow_dispatch: # যাতে আপনি নিজে হাত দিয়ে রান বাটন চাপতে পারেন
+
+jobs:
+  inspect-mac:
+    runs-on: macos-14 # ভিড় এড়ানোর গোপন শক্তিশালী অ্যাপল সিলিকন ম্যাক!
+    steps:
+      - name: Extract Mac Hardware & Specs
+        run: |
+          echo "================  APPLE HARDWARE REPORT  ================"
+          echo "১. ম্যাক ওএস ভার্সন:"
+          sw_vers
+          echo ""
+          echo "২. অ্যাপল প্রসেসরের আসল নাম ও আর্কিটেকচার:"
+          uname -m
+          sysctl -n machdep.cpu.brand_string 2>/dev/null || echo "Apple Silicon Chip"
+          echo ""
+          echo "৩. প্রসেসর কোর ও থ্রেড সংখ্যা:"
+          echo "Total CPU Cores: $(sysctl -n hw.ncpu)"
+          echo "Physical CPU Cores: $(sysctl -n hw.physicalcpu)"
+          echo ""
+          echo "৪. আসল র‍্যাম (Memory):"
+          echo "Total RAM: $(( $(sysctl -n hw.memsize) / 1024 / 1024 / 1024 )) GB"
+          echo ""
+          echo "৫. ম্যাকবুক/ম্যাক মডেলের কোড নেম:"
+          sysctl hw.model
+          echo "=========================================================="
