@@ -1,20 +1,25 @@
-name: Launch Mac Ternal with Fixed Ngrok Domain
+name: Mac Runner - Fully Automatic (24/7)
 
 on:
+  push:
+    branches:
+      - main
+      - master
   schedule:
-    - cron: '0 */6 * * *'  # ব্যাকআপ হিসেবে ক্রনজব
-  workflow_dispatch:
+    - cron: '0 */6 * * *'  # কোনো কারণে বন্ধ হলে প্রতি ৬ ঘণ্টায় অটো ব্যাকআপ
+  workflow_dispatch:       # স্ক্রিপ্টটি নিজে নিজেকে স্বয়ংক্রিয় রিস্টার্ট করার জন্য এটি ব্যাকগ্রাউন্ডে দরকার
+
+# ডুপ্লিকেট রান প্রতিরোধ এবং পুরনো রান অটো বন্ধ করার জন্য
+concurrency:
+  group: mac-runner-session
+  cancel-in-progress: true
 
 permissions:
   actions: write
   contents: read
 
-env:
-  NGROK_TOKEN: "3EcxNv9V3TVduvgRJkYQBZ1ha0h_4NgAqGxAFtNi7ZUDDFNAW"
-  NGROK_DOMAIN: "negate-cornmeal-obituary.ngrok-free.dev"
-
 jobs:
-  run-mac-terminal:
+  run-mac:
     runs-on: macos-14
     steps:
       - name: Checkout Code
@@ -24,92 +29,72 @@ jobs:
 
       - name: Auto-Clean Old Runs
         run: |
-          echo "🧹 পুরনো রান হিস্ট্রি গিটহাব স্টোরেজ থেকে মোছা হচ্ছে..."
+          echo "🧹 পুরনো জবের হিস্ট্রি মেমোরি থেকে মোছা হচ্ছে..."
           gh run list --status completed --limit 10 --json databaseId -q '.[].databaseId' | while read -r run_id; do
             gh run delete "$run_id" || true
           done
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-
-      - name: Install Dependencies
-        run: |
-          pip install gradio psutil pygments ansi2html
-
-      - name: Download & Setup Ngrok
-        run: |
-          curl -sLo ngrok.zip https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-darwin-arm64.zip
-          unzip -qo ngrok.zip
-          chmod +x ngrok
-          ./ngrok config add-authtoken $NGROK_TOKEN
-
-      - name: Core Run & Infinity Loop Setup
+      - name: Auto Run command.txt & Infinite Loop
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set +e
 
-          python3 app.py &
-          APP_PID=$!
-          sleep 4
-
-          echo "⏳ Ngrok কানেক্ট করা হচ্ছে..."
-          for i in {1..8}; do
-            ./ngrok http 7860 --domain=$NGROK_DOMAIN --log=stdout > ngrok.log 2>&1 &
-            NGROK_PID=$!
-            sleep 6
-
-            if grep -q "url=https://$NGROK_DOMAIN" ngrok.log; then
-              echo "🎉 সফল! ডোমেন: https://$NGROK_DOMAIN"
-              break
+          # ১. command.txt থেকে অটোমেটিক রান করার ফাংশন
+          run_custom_command() {
+            if [ -f "command.txt" ]; then
+              echo "🚀 command.txt এক্সিকিউট করা হচ্ছে..."
+              echo "----------------------------------------"
+              cat command.txt
+              echo -e "\n----------------------------------------"
+              
+              bash command.txt &
+              CMD_PID=$!
+              echo "📌 ব্যাকগ্রাউন্ড প্রসেস আইডি (PID): $CMD_PID"
             else
-              kill -9 $NGROK_PID 2>/dev/null || true
-              sleep 15
+              echo "⚠️ command.txt ফাইলটি পাওয়া যায়নি!"
             fi
-          done
+          }
 
-          # ⏰ Self-Queue Timer: ৫ ঘণ্টা ৫৫ মিনিট (21300 seconds)
+          # রান শুরু
+          run_custom_command
+
+          # ২. ২৪ ঘণ্টা অটোমেটিক চালু রাখার টাইমার (Self-Restart)
+          # গিটহাবের ৬ ঘণ্টার লিমিট শেষ হওয়ার আগেই (৫ ঘণ্টা ৫০ মিনিটে) এটি অটো নতুন রান চালু করবে
           (
-            sleep 21300
-            echo "⚠️ সেশনের সময় শেষ হয়ে আসছে! পরের সেশন কিউ (Queue) করা হচ্ছে..."
-            
-            # API দিয়ে একই workflow আবার রান করার রিকোয়েস্ট (নেক্সট সেশন)
-            gh workflow run "${{ github.workflow }}" --ref main || true
-            
+            sleep 21000
+            echo "⚠️ সেশনের সময় শেষ হয়ে আসছে! পরের সেশন স্বয়ংক্রিয়ভাবে স্টার্ট করা হচ্ছে..."
+            gh workflow run "${{ github.workflow }}" --ref "${{ github.ref_name }}" || true
             sleep 10
-            echo "অ্যাডভান্সড সেশন রিকোয়েস্ট পাঠানো হয়েছে। পুরনো সেশন বন্ধ করা হচ্ছে..."
-            # গিটহাবকে বোঝানো যে কাজ শেষ, exit 0 করো যাতে স্লট খালি হয়ে যায়।
-            kill -9 $APP_PID 2>/dev/null || true
-            pkill -f "ngrok" 2>/dev/null || true
+            echo "✅ নতুন সেশন শুরু হয়েছে। বর্তমান সেশন ক্লিন-এক্সিট হচ্ছে..."
+            kill -9 $CMD_PID 2>/dev/null || true
             exit 0
           ) &
 
-          # 🔄 Anti-Stall & Auto-Reloader Loop
+          # ৩. Anti-Stall ও লাইভ রিলোডার লুপ
           LOOP_COUNTER=0
           while true; do
             sleep 10
             LOOP_COUNTER=$((LOOP_COUNTER+1))
 
-            # প্রতি ৫ মিনিটে টার্মিনালে লগ দিবে যাতে গিটহাব জব হ্যাং ভেবে কিল না করে।
+            # প্রতি ৫ মিনিটে গিটহাবকে সিগন্যাল দিবে যে ওয়ার্কফ্লো সচল আছে
             if [ $LOOP_COUNTER -ge 30 ]; then
-              echo "✅ [Keep-Alive] ইঞ্জিন রানিং... $(date)"
+              echo "✅ [Keep-Alive] ওয়ার্কফ্লো চলছে... $(date)"
               LOOP_COUNTER=0
             fi
 
-            git fetch origin main -q 2>/dev/null || git fetch origin master -q 2>/dev/null || true
+            # আপনি কখনো command.txt পরিবর্তন করলে কোনো কিছু রিস্টার্ট ছাড়াই সাথে সাথে নতুন কমান্ড নিয়ে নিবে
+            git fetch origin "${{ github.ref_name }}" -q 2>/dev/null || true
             LOCAL=$(git rev-parse HEAD 2>/dev/null || true)
             REMOTE=$(git rev-parse @{u} 2>/dev/null || echo "$LOCAL")
-            
+
             if [ -n "$LOCAL" ] && [ -n "$REMOTE" ] && [ "$LOCAL" != "$REMOTE" ]; then
-              echo "⚡ নতুন কোড পাওয়া গেছে! অটো-রিস্টার্ট..."
+              echo "⚡ command.txt ফাইলে আপডেট পাওয়া গেছে! নতুন কোড রিলোড হচ্ছে..."
               git reset --hard @{u} -q || true
-              kill -9 $APP_PID 2>/dev/null || true
-              sleep 1
-              python3 app.py &
-              APP_PID=$!
+              kill -9 $CMD_PID 2>/dev/null || true
+              sleep 2
+              run_custom_command
             fi
           done
