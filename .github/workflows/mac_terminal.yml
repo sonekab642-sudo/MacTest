@@ -1,71 +1,104 @@
-name: Launch Mac Ternal with Hot-Reload
+name: Launch Mac Ternal with Fixed Ngrok Domain
 
 on:
+  schedule:
+    - cron: '0 */6 * * *'  # প্রতি ৬ ঘণ্টায় নিজে থেকে অটো-রিস্টার্ট
   workflow_dispatch:
+
+env:
+  NGROK_TOKEN: "3EcxNv9V3TVduvgRJkYQBZ1ha0h_4NgAqGxAFtNi7ZUDDFNAW"
+  NGROK_DOMAIN: "negate-cornmeal-obituary.ngrok-free.dev"
 
 jobs:
   run-mac-terminal:
     runs-on: macos-14
     steps:
-      - name: Checkout Repository Code
+      - name: Checkout Code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Auto-Clean Old Runs (হিস্ট্রি ফাঁকা রাখা)
+        run: |
+          echo "🧹 পুরনো সমাপ্ত হওয়া রানগুলো ডিলিট করা হচ্ছে..."
+          gh run list --repo ${{ github.repository }} --status completed --limit 10 --json databaseId -q '.[].databaseId' | while read -r run_id; do
+            gh run delete "$run_id" --repo ${{ github.repository }} || true
+          done
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      - name: Install Python Dependencies
+      - name: Install Dependencies
         run: |
           pip install gradio psutil pygments ansi2html
 
-      - name: Download & Setup Cloudflare Tunnel
+      - name: Download & Setup Ngrok for Apple Silicon
         run: |
-          curl -L --output cloudflared.tgz https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-arm64.tgz
-          tar -xvzf cloudflared.tgz
-          chmod +x cloudflared
+          curl -sLo ngrok.zip https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-darwin-arm64.zip
+          unzip -qo ngrok.zip
+          chmod +x ngrok
+          ./ngrok config add-authtoken $NGROK_TOKEN
 
-      - name: Launch Hot-Reload Engine & Tunnel
+      - name: Launch Ternal & Connect Ngrok Fixed Domain
         run: |
-          # ১. ক্লাউডফ্লেয়ার টানেল চালু করা (এটি একটানা সচল থাকবে)
-          ./cloudflared tunnel --url http://localhost:7860 --logfile cf.log &
-          
-          # ২. টানেল লিংক বের করা
-          sleep 6
-          echo "=========================================================="
-          echo "🚀 আপনার পার্মানেন্ট লাইভ লিঙ্ক:"
-          grep -o 'https://[-a-zA-Z0-9.]*trycloudflare.com' cf.log | head -n 1
-          echo "=========================================================="
-
-          # ৩. প্রথমবারের মতো app.py রান করা
+          # ১. ব্যাকগ্রাউন্ডে গ্রাডিও চালু
           python3 app.py &
           APP_PID=$!
+          sleep 4
 
-          # ৪. 🔄 অটো-ওয়াচার লুপ (প্রতি ১০ সেকেন্ড পর পর গিটহাব চেক করবে)
-          echo "🔄 অটো-রিলোড ইঞ্জিন চালু হয়েছে! app.py এডিট করলেই স্বয়ংক্রিয়ভাবে আপডেট হবে..."
-          
+          # ২. 🔄 Ngrok ডোমেন রিকভারি ও রিট্রাই ইঞ্জিন
+          echo "⏳ Ngrok পার্মানেন্ট ডোমেন কানেক্ট করা হচ্ছে..."
+          CONNECTED=false
+
+          for i in {1..8}; do
+            echo "👉 চেষ্টা নম্বর $i: ডোমেন বাইন্ড করা হচ্ছে..."
+            ./ngrok http 7860 --domain=$NGROK_DOMAIN --log=stdout > ngrok.log 2>&1 &
+            NGROK_PID=$!
+            sleep 6
+
+            if grep -q "url=https://$NGROK_DOMAIN" ngrok.log; then
+              echo "=========================================================="
+              echo "🎉 সফল! আপনার স্থায়ী ফিক্সড লিঙ্ক চালু হয়ে গেছে:"
+              echo "👉 https://$NGROK_DOMAIN"
+              echo "=========================================================="
+              CONNECTED=true
+              break
+            else
+              echo "⚠️ ডোমেন এখনো ব্যস্ত আছে (পুরনো সেশন ছাড়ছে)। ১৫ সেকেন্ড অপেক্ষা করা হচ্ছে..."
+              kill -9 $NGROK_PID 2>/dev/null || true
+              sleep 15
+            fi
+          done
+
+          if [ "$CONNECTED" = false ]; then
+            echo "❌ সতর্কবার্তা: ডোমেন সরাসরি পাওয়া যায়নি, ব্যাকআপ রানিং রাখা হচ্ছে।"
+          fi
+
+          # ৩. ৫ ঘণ্টা ৪৮ মিনিট পর টানেল রিলিজ করা (যাতে পরের সেশনের জন্য ডোমেন ফাঁকা হয়ে যায়)
+          (
+            sleep 20880
+            echo "⏰ সেশনের সময় শেষ হচ্ছে। ডোমেন রিলিজ করা হচ্ছে..."
+            kill -9 $NGROK_PID 2>/dev/null || true
+            pkill -f "ngrok" 2>/dev/null || true
+          ) &
+
+          # ৪. 🔄 অটো-রিলোডার লুপ (app.py কোড আপডেট হ্যান্ডলার)
           while true; do
             sleep 10
             git fetch origin main -q 2>/dev/null || git fetch origin master -q 2>/dev/null
-            
-            # বর্তমান ও নতুন কমিট চেক
             LOCAL=$(git rev-parse HEAD)
             REMOTE=$(git rev-parse @{u} 2>/dev/null || echo "$LOCAL")
-            
             if [ "$LOCAL" != "$REMOTE" ]; then
-              echo "⚡ নতুন কোড পাওয়া গেছে! app.py অটো-রিলোড হচ্ছে..."
+              echo "⚡ নতুন কোড পাওয়া গেছে! অটো-রিলোড হচ্ছে..."
               git reset --hard @{u} -q
-              
-              # পুরনো app.py বন্ধ করা
               kill -9 $APP_PID 2>/dev/null || true
               pkill -f "python3 app.py" 2>/dev/null || true
               sleep 1
-              
-              # নতুন app.py ব্যাকগ্রাউন্ডে চালু করা
               python3 app.py &
               APP_PID=$!
-              echo "✅ app.py সফলভাবে রিস্টার্ট হয়েছে! ব্রাউজার রিফ্রেশ করলেই নতুন কোড লাইভ!"
             fi
           done
