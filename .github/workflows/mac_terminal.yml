@@ -1,14 +1,16 @@
-name: Launch Mac Ternal with Cloudflare
+name: Launch Mac Ternal with Hot-Reload
 
 on:
-  workflow_dispatch: # হাত দিয়ে ১ ক্লিকে রান করার জন্য
+  workflow_dispatch:
 
 jobs:
   run-mac-terminal:
-    runs-on: macos-14 # খাঁটি অ্যাপল সিলিকন M1/M2 ম্যাক!
+    runs-on: macos-14
     steps:
       - name: Checkout Repository Code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -19,31 +21,51 @@ jobs:
         run: |
           pip install gradio psutil pygments ansi2html
 
-      - name: Download & Setup Cloudflare Tunnel for Apple Silicon
+      - name: Download & Setup Cloudflare Tunnel
         run: |
           curl -L --output cloudflared.tgz https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-arm64.tgz
           tar -xvzf cloudflared.tgz
           chmod +x cloudflared
 
-      - name: Launch Ternal & Expose Public URL
+      - name: Launch Hot-Reload Engine & Tunnel
         run: |
-          # ১. ব্যাকগ্রাউন্ডে গ্রাডিও ম্যাক টার্মিনাল রান করা
-          python app.py &
-          
-          # ২. গ্রাডিও পুরোপুরি বুট হওয়ার জন্য কয়েক সেকেন্ড অপেক্ষা
-          sleep 5
-
-          # ৩. ব্যাকগ্রাউন্ডে ক্লাউডফ্লেয়ার টানেল চালু করা
+          # ১. ক্লাউডফ্লেয়ার টানেল চালু করা (এটি একটানা সচল থাকবে)
           ./cloudflared tunnel --url http://localhost:7860 --logfile cf.log &
-
-          # ৪. ক্লাউডফ্লেয়ার লিঙ্ক তৈরি হওয়া পর্যন্ত অপেক্ষা ও লগ থেকে বের করা
-          echo "Waiting for Cloudflare Tunnel to generate URL..."
-          sleep 8
           
+          # ২. টানেল লিংক বের করা
+          sleep 6
           echo "=========================================================="
-          echo "🚀 আপনার লাইভ ম্যাক টার্মিনাল লিঙ্ক নিচে তৈরি হয়ে গেছে:"
+          echo "🚀 আপনার পার্মানেন্ট লাইভ লিঙ্ক:"
           grep -o 'https://[-a-zA-Z0-9.]*trycloudflare.com' cf.log | head -n 1
           echo "=========================================================="
 
-          # ৫. ৬ ঘণ্টা সেশনকে জ্যান্ত রাখা যাতে আপনি আরামসে মোবাইল থেকে চালাতে পারেন
-          sleep 21600
+          # ৩. প্রথমবারের মতো app.py রান করা
+          python3 app.py &
+          APP_PID=$!
+
+          # ৪. 🔄 অটো-ওয়াচার লুপ (প্রতি ১০ সেকেন্ড পর পর গিটহাব চেক করবে)
+          echo "🔄 অটো-রিলোড ইঞ্জিন চালু হয়েছে! app.py এডিট করলেই স্বয়ংক্রিয়ভাবে আপডেট হবে..."
+          
+          while true; do
+            sleep 10
+            git fetch origin main -q 2>/dev/null || git fetch origin master -q 2>/dev/null
+            
+            # বর্তমান ও নতুন কমিট চেক
+            LOCAL=$(git rev-parse HEAD)
+            REMOTE=$(git rev-parse @{u} 2>/dev/null || echo "$LOCAL")
+            
+            if [ "$LOCAL" != "$REMOTE" ]; then
+              echo "⚡ নতুন কোড পাওয়া গেছে! app.py অটো-রিলোড হচ্ছে..."
+              git reset --hard @{u} -q
+              
+              # পুরনো app.py বন্ধ করা
+              kill -9 $APP_PID 2>/dev/null || true
+              pkill -f "python3 app.py" 2>/dev/null || true
+              sleep 1
+              
+              # নতুন app.py ব্যাকগ্রাউন্ডে চালু করা
+              python3 app.py &
+              APP_PID=$!
+              echo "✅ app.py সফলভাবে রিস্টার্ট হয়েছে! ব্রাউজার রিফ্রেশ করলেই নতুন কোড লাইভ!"
+            fi
+          done
